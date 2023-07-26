@@ -1,4 +1,9 @@
 #!/usr/bin/env bb
+;; Just so this can be a self-contained script
+(require
+ '[babashka.deps :as deps])
+(deps/add-deps '{:deps {io.github.lispyclouds/bblgum {:git/sha "1d4de3d49b84f64d1b71930fa1161f8d2622a4d9"}}})
+
 (require '[babashka.process :as p :refer [shell]]
          '[babashka.cli :as cli]
          '[babashka.fs :as fs]
@@ -64,7 +69,7 @@
                  first)
             [_ cluster taskArn] (arn->tokens taskArn)
             port (or port (-> (b/gum :input :header "Choose the port to forward") :result first))
-            task-style (-> (b/gum :style [selected-task] :foreground 212) :result first)
+            task-style (-> (b/gum :style [(format "ecs:%s_%s_%s" cluster taskArn runtimeId)] :foreground 212) :result first)
             port-style (-> (b/gum :style [port] :foreground 212) :result first)]
         (b/gum :join
                [(str/join "\n"
