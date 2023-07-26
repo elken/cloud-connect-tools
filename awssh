@@ -1,0 +1,84 @@
+#!/usr/bin/env bb
+(require '[babashka.process :as p :refer [shell]]
+         '[babashka.cli :as cli]
+         '[babashka.fs :as fs]
+         '[bblgum.core :as b])
+
+(def cli-options
+  {:help {:desc "Show this help"
+          :alias :h
+          :coerce :boolean}
+   :port {:desc "Specify a port to use to skip prompting"
+          :alias :p
+          :coerce :string}})
+
+(defn- aws-command [cmd title]
+  (->
+   (b/gum :spin (into ["aws"] cmd)  :spinner "line" :title title :show-output true)
+   :result
+   str/join
+   (json/parse-string true)))
+
+(defn- arn->tokens [arn]
+  (str/split arn (re-pattern "/")))
+
+(defn check-aws []
+  (let [{:keys [exit err]} (shell {:out :string
+                                   :err :string
+                                   :continue :true} "aws sts get-caller-identity")]
+    (when-not (= exit 0)
+      err)))
+
+(defn list-clusters []
+  (:clusterArns
+   (aws-command ["ecs" "list-clusters"] "Getting clusters")))
+
+(defn list-tasks [cluster]
+  (:taskArns
+   (aws-command ["ecs" "list-tasks" "--cluster" cluster] "Getting tasks")))
+
+(defn describe-tasks [task]
+  (let [[_ cluster task] (arn->tokens task)]
+    (:tasks
+     (aws-command ["ecs" "describe-tasks" "--cluster" cluster "--tasks" task] (format "Enumerating tasks for %s" task)))))
+
+(let [{:keys [port help]} (cli/parse-opts *command-line-args* {:spec cli-options})]
+  (if help
+    (do
+      (println (str (fs/file-name *file*) " -- Easily port forward to an ECS container."))
+      (println)
+      (println (cli/format-opts {:spec cli-options})))
+    (if-let [error (check-aws)]
+      (throw (ex-info error {}))
+      (let [tasks (->> (list-clusters)
+                       (mapcat list-tasks)
+                       (mapcat describe-tasks))
+            containers (mapcat :containers tasks)
+            selected-task (-> (b/gum :choose (map :name containers) :header "Choose a task") :result first)
+            {:keys [taskArn runtimeId]}
+            (->> tasks
+                 (mapcat (fn [{:keys [containers]}]
+                           (filter (fn [{:keys [name]}]
+                                     (= selected-task name))
+                                   containers)))
+                 first)
+            [_ cluster taskArn] (arn->tokens taskArn)
+            port (or port (-> (b/gum :input :header "Choose the port to forward") :result first))
+            task-style (-> (b/gum :style [selected-task] :foreground 212) :result first)
+            port-style (-> (b/gum :style [port] :foreground 212) :result first)]
+        (b/gum :join
+               [(str/join "\n"
+                          (:result
+                           (b/gum :style [(format "Port forwarding %s on %s" task-style port-style)]
+                                  :height 3
+                                  :padding "1 2"
+                                  :border "double"
+                                  :border-foreground 57)))]
+               :horizontal true :as :ignored)
+        (aws-command
+         ["ssm"
+          "start-session"
+          "--target" (format "ecs:%s_%s_%s" cluster taskArn runtimeId)
+          "--document-name" "AWS-StartPortForwardingSession"
+          "--parameters" (json/generate-string {:portNumber [port] :localPortNumber [port]})]
+         (format "Connected! Use your local client to connect to localhost:%s\n\nUse Control-C to stop." port))))))

@@ -1,0 +1,33 @@
+#+title: awssh
+#+author: Ellis Kenyő
+#+date: 2023-07-26
+#+latex_class: chameleon
+
+[[file:assets/demo.gif]]
+
+A poorly named script to easily port-forward to an Amazon ECS container.
+Intended for accessing remote nREPL instances, in theory it could be used for
+anything.
+
+* Dependencies
+- [[https://github.com/babashka/babashka#installation][babashka]]
+- [[https://github.com/charmbracelet/gum#installation][gum]]
+- [[https://docs.aws.amazon.com/cli/latest/userguide/getting-started-install.html][AWS CLI]]
+  - Including the [[https://docs.aws.amazon.com/systems-manager/latest/userguide/session-manager-troubleshooting.html#plugin-not-found][SSM plugin]]
+
+* Install
+The script is a self-contained babashka script, so place anywhere in your path
+after =bb= and =gum= and it should be fine.
+
+* Usage
+#+begin_src shell :exports results :results code
+./awssh -h
+#+end_src
+
+#+RESULTS:
+#+begin_src shell
+awssh -- Easily port forward to an ECS container.
+
+  -h, --help Show this help
+  -p, --port Specify a port to use to skip prompting
+#+end_src
