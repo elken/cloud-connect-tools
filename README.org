@@ -5,7 +5,7 @@
 
 [[file:assets/demo.gif]]
 
-A poorly named script to easily port-forward to an Amazon ECS container.
+A poorly named script to easily port-forward or SSH to an Amazon ECS container.
 Intended for accessing remote nREPL instances, in theory it could be used for
 anything.
 
@@ -28,6 +28,17 @@ after =bb= and =gum= and it should be fine.
 #+begin_src shell
 awssh -- Easily port forward to an ECS container.
 
-  -h, --help Show this help
-  -p, --port Specify a port to use to skip prompting
+  -h, --help    Show this help
+  -f, --forward Specify ports to forward to. Leave unset to ssh directly.
+
+Use local:remote or 1 port for local & remote
 #+end_src
+
+As per the help doc, there are 3 modes of use here:
+
+** Regular SSH
+In order to just connect to an ECS container, run without any arguments and select the container from the list.
+** Port forward on the same port
+For this, pass the =-f= flag with a single port and that port will be used to forward both remotely and locally
+** Port forward on different ports
+For this, pass the =-f= flag with a portspec like =2222:8080= which will create a forward from the /local/ port =2222= to the /remote/ port =8080=
