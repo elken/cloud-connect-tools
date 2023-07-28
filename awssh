@@ -13,9 +13,9 @@
   {:help {:desc "Show this help"
           :alias :h
           :coerce :boolean}
-   :port {:desc "Specify a port to use to skip prompting"
-          :alias :p
-          :coerce :string}})
+   :forward {:desc "Specify ports to forward to. Leave unset to ssh directly.\n\nUse local:remote or 1 port for local & remote"
+             :alias :f
+             :coerce :string}})
 
 (defn- aws-command [cmd title]
   (->
@@ -47,7 +47,15 @@
     (:tasks
      (aws-command ["ecs" "describe-tasks" "--cluster" cluster "--tasks" task] (format "Enumerating tasks for %s" task)))))
 
-(let [{:keys [port help]} (cli/parse-opts *command-line-args* {:spec cli-options})]
+(defn parse-ports [ports]
+  (when ports
+    (let [tokens (str/split ports (re-pattern ":"))]
+      (condp = (count tokens)
+        1 [(first tokens) (first tokens)]
+        2 tokens
+        :else (throw (ex-info "Invalid port specification" {:ports ports}))))))
+
+(let [{:keys [forward help]} (cli/parse-opts *command-line-args* {:spec cli-options})]
   (if help
     (do
       (println (str (fs/file-name *file*) " -- Easily port forward to an ECS container."))
@@ -55,7 +63,8 @@
       (println (cli/format-opts {:spec cli-options})))
     (if-let [error (check-aws)]
       (throw (ex-info error {}))
-      (let [tasks (->> (list-clusters)
+      (let [[local-port remote-port] (parse-ports forward)
+            tasks (->> (list-clusters)
                        (mapcat list-tasks)
                        (mapcat describe-tasks))
             containers (mapcat :containers tasks)
@@ -68,22 +77,37 @@
                                    containers)))
                  first)
             [_ cluster taskArn] (arn->tokens taskArn)
-            port (or port (-> (b/gum :input :header "Choose the port to forward") :result first))
             task-style (-> (b/gum :style [(format "ecs:%s_%s_%s" cluster taskArn runtimeId)] :foreground 212) :result first)
-            port-style (-> (b/gum :style [port] :foreground 212) :result first)]
-        (b/gum :join
-               [(str/join "\n"
-                          (:result
-                           (b/gum :style [(format "Port forwarding %s on %s" task-style port-style)]
-                                  :height 3
-                                  :padding "1 2"
-                                  :border "double"
-                                  :border-foreground 57)))]
-               :horizontal true :as :ignored)
-        (aws-command
-         ["ssm"
-          "start-session"
-          "--target" (format "ecs:%s_%s_%s" cluster taskArn runtimeId)
-          "--document-name" "AWS-StartPortForwardingSession"
-          "--parameters" (json/generate-string {:portNumber [port] :localPortNumber [port]})]
-         (format "Connected! Use your local client to connect to localhost:%s\n\nUse Control-C to stop." port))))))
+            port-style (-> (b/gum :style [local-port ":" remote-port] :foreground 212) :result first)]
+        (if forward
+          (do
+            (b/gum :join
+                   [(str/join "\n"
+                              (:result
+                               (b/gum :style [(format "Port forwarding %s on %s" task-style port-style)]
+                                      :height 3
+                                      :padding "1 2"
+                                      :border "double"
+                                      :border-foreground 57)))]
+                   :horizontal true :as :ignored)
+            (aws-command
+             ["ssm"
+              "start-session"
+              "--target" (format "ecs:%s_%s_%s" cluster taskArn runtimeId)
+              "--document-name" "AWS-StartPortForwardingSession"
+              "--parameters" (json/generate-string {:portNumber [remote-port] :localPortNumber [local-port]})]
+             (format "Connected! Use your local client to connect to localhost:%s\n\nUse Control-C to stop." local-port)))
+          (do
+            (b/gum :join
+                   [(str/join "\n"
+                              (:result
+                               (b/gum :style [(format "SSHing to %s" task-style)]
+                                      :height 3
+                                      :padding "1 2"
+                                      :border "double"
+                                      :border-foreground 57)))]
+                   :horizontal true :as :ignored)
+            (shell ["aws"
+                    "ssm"
+                    "start-session"
+                    "--target" (format "ecs:%s_%s_%s" cluster taskArn runtimeId)])))))))
