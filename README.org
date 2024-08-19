@@ -48,6 +48,8 @@ For this, pass the =-f= flag with a portspec like =2222:8080= which will create 
 
 
 * kubecon
+[[file:assets/kubecon.gif]]
+
 Similar to awssh, this allows you to run an arbitrary command on a pod.
 
 ** Dependencies
