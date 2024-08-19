@@ -111,3 +111,4 @@
                     "ssm"
                     "start-session"
                     "--target" (format "ecs:%s_%s_%s" cluster taskArn runtimeId)])))))))
+;; vim: ft=clojure

@@ -1,0 +1,117 @@
+#!/usr/bin/env bb
+;; Just so this can be a self-contained script
+(require
+ '[babashka.deps :as deps])
+(deps/add-deps '{:deps {io.github.lispyclouds/bblgum {:git/sha "1d4de3d49b84f64d1b71930fa1161f8d2622a4d9"}}})
+
+(require '[babashka.process :as p :refer [shell]]
+         '[babashka.cli :as cli]
+         '[babashka.fs :as fs]
+         '[bblgum.core :as b]
+         '[clojure.edn :as edn])
+
+(def ^:private cache-path (fs/xdg-cache-home "kubecon"))
+(def ^:private namespace-cache-path (fs/path cache-path "namespaces"))
+(def ^:private history-path (fs/path cache-path "history"))
+
+(fs/create-dirs cache-path)
+
+(def cli-options
+  {:help {:desc "Show this help"
+          :alias :h
+          :coerce :boolean}
+   :force {:desc "Delete the caches and re-fetch all cached data"
+           :alias :f
+           :coerce :boolean}})
+
+(defn- kubectl-command [cmd title]
+  (->
+   (b/gum :spin (into ["kubectl" "-o" "json"] cmd)  :spinner "line" :title title :show-output true)
+   :result
+   str/join
+   (json/parse-string true)))
+
+(defn- arn->tokens [arn]
+  (str/split arn (re-pattern "/")))
+
+(defn- remove-environment [ns]
+  (-> ns
+      (str/replace "-dev" "")
+      (str/replace "-prod" "")
+      (str/replace "-preprod" "")
+      (str/replace "-production" "")
+      (str/replace "-uat" "")))
+
+;; TODO Handle history items that are missing
+(defn- choose-with-history [items keys header]
+  (let [history (edn/read-string (if (fs/exists? history-path) (first (fs/read-all-lines history-path)) "{}"))
+        item (-> (b/gum :choose (distinct (remove nil? (apply conj (map #(get-in % [:metadata :name]) items) (reverse (get-in history keys))))) :header header) :result first)]
+    (fs/write-lines history-path [(pr-str (update-in history keys #(remove nil? (distinct (conj % item)))))])
+    item))
+
+(defn check-kubectl []
+  (let [{:keys [exit err]} (shell {:out :string
+                                   :err :string
+                                   :continue :true} "kubectl config get-contexts")]
+    (when-not (= exit 0)
+      err)))
+
+;; TODO Handle errors
+(defn list-namespaces []
+  (if (fs/exists? namespace-cache-path)
+    (json/parse-string (first (fs/read-all-lines namespace-cache-path)) true)
+    (let [items (:items (kubectl-command ["get" "namespaces"] "Getting namespaces"))]
+      (fs/write-lines namespace-cache-path [(json/generate-string items)])
+      items)))
+
+(defn list-deployments [ns]
+  (:items
+   (kubectl-command ["get" "deployments" "-n" ns] (format "Getting deployments for %s" ns))))
+
+(defn choose-namespace []
+  (choose-with-history (list-namespaces) [:namespaces] "Choose a namespace"))
+
+(defn choose-deployment [namespace]
+  (choose-with-history (list-deployments namespace) [:deployments namespace] "Choose a deployment"))
+
+(let [{:keys [force help]} (cli/parse-opts *command-line-args* {:spec cli-options})]
+  (when force
+    (fs/delete-if-exists namespace-cache-path))
+  (if help
+    (do
+      (println (str (fs/file-name *file*) " -- Run a command for a pod."))
+      (println)
+      (println (cli/format-opts {:spec cli-options})))
+    (if-let [error (check-kubectl)]
+      (throw (ex-info error {}))
+      (let [namespace (choose-namespace)
+            _ (when (nil? namespace) (System/exit 1))
+            container (remove-environment namespace)
+            deployment (choose-deployment namespace)
+            _ (when (nil? deployment) (System/exit 1))
+            command (-> (b/gum :input :header "Enter a command to run (default rails c)" :value "rails c") :result first)
+            _ (when (nil? command) (System/exit 1))
+            command-style (-> (b/gum :style [(format "%s" command )] :foreground 212) :result first)
+            pod-style (-> (b/gum :style [(format "%s (%s)" deployment namespace)] :foreground 212) :result first)]
+        (b/gum :join
+               [(str/join "\n"
+                          (:result
+                           (b/gum :style [(format "Running %s on %s" command-style pod-style)]
+                                  :height 3
+                                  :padding "1 2"
+                                  :border "double"
+                                  :border-foreground 57)))]
+               :horizontal true :as :ignored)
+        (apply shell
+               "kubectl"
+               "exec"
+               (format "deploy/%s" deployment)
+               "-it"
+               "-c"
+               container
+               "-n"
+               namespace
+               "--"
+               (str/split command (re-pattern " ")))))))
+
+;; vim: ft=clojure
