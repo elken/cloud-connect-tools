@@ -37,7 +37,7 @@
 (defn- remove-environment [ns]
   (-> ns
       (str/replace "-dev" "")
-      (str/replace "-prod" "")
+      (str/replace #"-prod$" "")
       (str/replace "-preprod" "")
       (str/replace "-production" "")
       (str/replace "-uat" "")))
@@ -45,7 +45,7 @@
 ;; TODO Handle history items that are missing
 (defn- choose-with-history [items keys header]
   (let [history (edn/read-string (if (fs/exists? history-path) (first (fs/read-all-lines history-path)) "{}"))
-        item (-> (b/gum :choose (distinct (remove nil? (apply conj (map #(get-in % [:metadata :name]) items) (reverse (get-in history keys))))) :header header) :result first)]
+        item (-> (b/gum :filter (distinct (remove nil? (apply conj (map #(get-in % [:metadata :name]) items) (reverse (get-in history keys))))) :header header) :result first)]
     (fs/write-lines history-path [(pr-str (update-in history keys #(remove nil? (distinct (conj % item)))))])
     item))
 
@@ -91,7 +91,7 @@
             _ (when (nil? deployment) (System/exit 1))
             command (-> (b/gum :input :header "Enter a command to run (default rails c)" :value "rails c") :result first)
             _ (when (nil? command) (System/exit 1))
-            command-style (-> (b/gum :style [(format "%s" command )] :foreground 212) :result first)
+            command-style (-> (b/gum :style [(format "%s" command)] :foreground 212) :result first)
             pod-style (-> (b/gum :style [(format "%s (%s)" deployment namespace)] :foreground 212) :result first)]
         (b/gum :join
                [(str/join "\n"
