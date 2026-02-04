@@ -53,25 +53,15 @@ For this, pass the =-f= flag with a portspec like =2222:8080= which will create 
 Similar to awssh, this allows you to run an arbitrary command on a pod.
 
 ** Dependencies
-- [[https://github.com/babashka/babashka#installation][babashka]]
-- [[https://github.com/charmbracelet/gum#installation][gum]]
+- [[https://www.ruby-lang.org/en/documentation/installation/][ruby]]
 - [[https://kubernetes.io/docs/reference/kubectl/][kubectl]] (setup for this is outside the scope of this project)
 
 ** Install
-The script is a self-contained babashka script, so place anywhere in your path
-after =bb= and =gum= and it should be fine.
+The script is a self-contained ruby script, so place anywhere in your path
 
 ** Usage
 #+begin_src shell :exports results :results code
-./kubecon -h
-#+end_src
-
-#+RESULTS:
-#+begin_src shell
-kubecon -- Run a command for a pod.
-
-  -h, --help  Show this help
-  -f, --force Delete the caches and re-fetch all cached data
+./kubecon
 #+end_src
 
 The bulk of the usage is just following the prompts. Namespaces and deployments

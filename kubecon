@@ -1,117 +1,88 @@
-#!/usr/bin/env bb
-;; Just so this can be a self-contained script
-(require
- '[babashka.deps :as deps])
-(deps/add-deps '{:deps {io.github.lispyclouds/bblgum {:git/sha "1d4de3d49b84f64d1b71930fa1161f8d2622a4d9"}}})
+#!/usr/bin/env ruby
+# frozen_string_literal: true
+require 'bundler/inline'
 
-(require '[babashka.process :as p :refer [shell]]
-         '[babashka.cli :as cli]
-         '[babashka.fs :as fs]
-         '[bblgum.core :as b]
-         '[clojure.edn :as edn])
+gemfile do
+  source 'https://rubygems.org'
+  gem 'gum'
+end
 
-(def ^:private cache-path (fs/xdg-cache-home "kubecon"))
-(def ^:private namespace-cache-path (fs/path cache-path "namespaces"))
-(def ^:private history-path (fs/path cache-path "history"))
+require "json"
+require 'open3'
+require 'fileutils'
 
-(fs/create-dirs cache-path)
+CACHE_DIR = File.join(ENV['XDG_CACHE_HOME'] || File.expand_path('~/.cache'), 'kubecon')
+NAMESPACES = File.join(CACHE_DIR, "namespaces")
+HISTORY_PATH = File.join(CACHE_DIR, "history")
 
-(def cli-options
-  {:help {:desc "Show this help"
-          :alias :h
-          :coerce :boolean}
-   :force {:desc "Delete the caches and re-fetch all cached data"
-           :alias :f
-           :coerce :boolean}})
+FileUtils.mkdir_p(CACHE_DIR)
 
-(defn- kubectl-command [cmd title]
-  (->
-   (b/gum :spin (into ["kubectl" "-o" "json"] cmd)  :spinner "line" :title title :show-output true)
-   :result
-   str/join
-   (json/parse-string true)))
+def kubectl(title = "Running...", *cmd)
+  result = Gum.spin(title, spinner: :line) do
+    IO.popen(['kubectl', '-o', 'json'] + cmd).read
+  end
+  result
+end
 
-(defn- arn->tokens [arn]
-  (str/split arn (re-pattern "/")))
+def kubectl_setup?
+  _stdout, stderr, status = Open3.capture3("kubectl config get-contexts")
 
-(defn- remove-environment [ns]
-  (-> ns
-      (str/replace "-dev" "")
-      (str/replace #"-prod$" "")
-      (str/replace "-preprod" "")
-      (str/replace "-production" "")
-      (str/replace "-uat" "")))
+  unless status.success?
+    puts stderr
+    exit status.exitstatus
+  end
+end
 
-;; TODO Handle history items that are missing
-(defn- choose-with-history [items keys header]
-  (let [history (edn/read-string (if (fs/exists? history-path) (first (fs/read-all-lines history-path)) "{}"))
-        item (-> (b/gum :filter (distinct (remove nil? (apply conj (map #(get-in % [:metadata :name]) items) (reverse (get-in history keys))))) :header header) :result first)]
-    (fs/write-lines history-path [(pr-str (update-in history keys #(remove nil? (distinct (conj % item)))))])
-    item))
+def namespaces
+  return JSON.parse(File.read(NAMESPACES), symbolize_names: true)[:items] if File.exist?(NAMESPACES)
 
-(defn check-kubectl []
-  (let [{:keys [exit err]} (shell {:out :string
-                                   :err :string
-                                   :continue :true} "kubectl config get-contexts")]
-    (when-not (= exit 0)
-      err)))
+  namespaces = kubectl("Getting namespaces", "get", "namespaces")
+  File.open(NAMESPACES, "w") do |f|
+    f.write(namespaces)
+  end
+end
 
-;; TODO Handle errors
-(defn list-namespaces []
-  (if (fs/exists? namespace-cache-path)
-    (json/parse-string (first (fs/read-all-lines namespace-cache-path)) true)
-    (let [items (:items (kubectl-command ["get" "namespaces"] "Getting namespaces"))]
-      (fs/write-lines namespace-cache-path [(json/generate-string items)])
-      items)))
+def deployments(namespace)
+  kubectl("Getting deployments for #{namespace}", "get", "deployments", "-n", namespace)
+end
 
-(defn list-deployments [ns]
-  (:items
-   (kubectl-command ["get" "deployments" "-n" ns] (format "Getting deployments for %s" ns))))
+def choose_with_history(items, keys, header)
+  items = items.is_a?(String) ? JSON.parse(items, symbolize_names: true)[:items] : items
 
-(defn choose-namespace []
-  (choose-with-history (list-namespaces) [:namespaces] "Choose a namespace"))
+  history = File.exist?(HISTORY_PATH) ? JSON.parse(File.read(HISTORY_PATH), symbolize_names: true) : {}
 
-(defn choose-deployment [namespace]
-  (choose-with-history (list-deployments namespace) [:deployments namespace] "Choose a deployment"))
+  names = items.first.is_a?(Hash) ? items.map { |i| i.dig(:metadata, :name) }.compact : items
+  hist = history.dig(*keys) || []
 
-(let [{:keys [force help]} (cli/parse-opts *command-line-args* {:spec cli-options})]
-  (when force
-    (fs/delete-if-exists namespace-cache-path))
-  (if help
-    (do
-      (println (str (fs/file-name *file*) " -- Run a command for a pod."))
-      (println)
-      (println (cli/format-opts {:spec cli-options})))
-    (if-let [error (check-kubectl)]
-      (throw (ex-info error {}))
-      (let [namespace (choose-namespace)
-            _ (when (nil? namespace) (System/exit 1))
-            container (remove-environment namespace)
-            deployment (choose-deployment namespace)
-            _ (when (nil? deployment) (System/exit 1))
-            command (-> (b/gum :input :header "Enter a command to run (default rails c)" :value "rails c") :result first)
-            _ (when (nil? command) (System/exit 1))
-            command-style (-> (b/gum :style [(format "%s" command)] :foreground 212) :result first)
-            pod-style (-> (b/gum :style [(format "%s (%s)" deployment namespace)] :foreground 212) :result first)]
-        (b/gum :join
-               [(str/join "\n"
-                          (:result
-                           (b/gum :style [(format "Running %s on %s" command-style pod-style)]
-                                  :height 3
-                                  :padding "1 2"
-                                  :border "double"
-                                  :border-foreground 57)))]
-               :horizontal true :as :ignored)
-        (apply shell
-               "kubectl"
-               "exec"
-               (format "deploy/%s" deployment)
-               "-it"
-               "-c"
-               container
-               "-n"
-               namespace
-               "--"
-               (str/split command (re-pattern " ")))))))
+  selected = Gum.filter((hist.reverse + names).uniq, header: header)
 
-;; vim: ft=clojure
+  keys[0..-2].reduce(history) { |h, k| h[k] ||= {} }[keys.last] = (hist + [selected]).uniq
+  File.write(HISTORY_PATH, JSON.pretty_generate(history))
+  selected
+end
+
+namespace = choose_with_history(namespaces, [:namespaces], "Choose a namespace")
+exit 1 if namespace.nil?
+
+deployment = choose_with_history(deployments(namespace), [:deployments, namespace], "Choose a deployment for #{namespace}")
+exit 1 if deployment.nil?
+
+command = Gum.input(value: "rails c", placeholder: "Enter a command to run", prompt: "> ")
+exit 1 if command.nil?
+
+command_style = Gum.style(command, foreground: "212")
+pod_style = Gum.style("#{deployment} (#{namespace})", foreground: "212")
+
+box = Gum.style(
+  "Running #{command_style} on #{pod_style}",
+  height: 3,
+  padding: "1 2",
+  border: :double,
+  border_foreground: "57"
+)
+
+puts box
+
+args = ['kubectl', 'exec', '-it', '-n', namespace, "deploy/#{deployment}", '--']
+args.concat(command.is_a?(Array) ? command : Shellwords.split(command))
+system(*args)
